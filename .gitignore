@@ -1,4 +1,4 @@
-# 依赖 / 构建产物
+# 依赖 / 构建产物（dist 由 tools/pack.js 生成，作为 Release 资产分发，不入库）
 node_modules/
 dist/
 build/
