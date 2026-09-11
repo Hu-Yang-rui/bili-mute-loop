@@ -1,0 +1,13 @@
+{
+  "name": "bili-mute-loop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Chrome MV3 扩展：B站直播间指定 UID 循环「禁言 → 0.5s 内解除禁言」",
+  "scripts": {
+    "test": "node test/harness.js && node test/harness-pause.js",
+    "test:loop": "node test/harness.js",
+    "test:pause": "node test/harness-pause.js",
+    "check": "node --check src/runtime.js && node --check src/page-bridge.js && node --check src/background.js && node --check src/popup.js",
+    "verify": "npm run check && npm test"
+  }
+}

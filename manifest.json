@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "B站直播 禁言/解禁 循环助手",
+  "version": "1.0.0",
+  "description": "在 Bilibili 直播间对指定 UID 循环执行「禁言 → 0.5s 内解除禁言」，用于权限接口联调与自动化测试。",
+  "minimum_chrome_version": "111",
+  "permissions": [
+    "storage",
+    "scripting",
+    "tabs"
+  ],
+  "optional_permissions": [
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "https://live.bilibili.com/*",
+    "https://api.live.bilibili.com/*",
+    "https://link.bilibili.com/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "action": {
+    "default_title": "禁言循环助手",
+    "default_popup": "src/popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://live.bilibili.com/*"],
+      "js": ["src/page-bridge.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["src/runtime.js"],
+      "matches": ["https://live.bilibili.com/*"]
+    }
+  ]
+}

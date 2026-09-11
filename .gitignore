@@ -1,0 +1,23 @@
+# 依赖 / 构建产物
+node_modules/
+dist/
+build/
+*.zip
+*.crx
+*.pem
+*.key
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 本地私密文件（切勿提交：cookie、token、抓包结果）
+.env
+.env.*
+*.local.json
+cookies.txt
+*.har
+*.har.gz

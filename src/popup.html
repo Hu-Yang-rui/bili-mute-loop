@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>禁言循环助手</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="hd">
+    <div class="hd-l">
+      <span class="dot" id="dot"></span>
+      <div>
+        <h1>禁言循环助手</h1>
+        <p class="sub" id="sub">正在读取直播间…</p>
+      </div>
+    </div>
+    <button class="icon-btn" id="btnProbe" title="探测当前禁言状态">探测</button>
+  </header>
+
+  <main>
+    <section class="grid">
+      <label class="field">
+        <span>目标 UID <b class="req">*</b></span>
+        <input id="uid" type="text" inputmode="numeric" placeholder="例如 12345678" autocomplete="off">
+      </label>
+      <label class="field">
+        <span>房间号</span>
+        <input id="roomId" type="text" inputmode="numeric" placeholder="留空 = 用当前直播间" autocomplete="off">
+      </label>
+    </section>
+
+    <section class="grid">
+      <label class="field">
+        <span>禁言 → 解禁 延迟 <em>ms</em></span>
+        <input id="unbanDelayMs" type="number" min="0" max="500" step="10" value="300">
+      </label>
+      <label class="field">
+        <span>周期间隔 <em>ms</em></span>
+        <input id="cycleIntervalMs" type="number" min="0" step="50" value="800">
+      </label>
+    </section>
+
+    <section class="grid">
+      <label class="field">
+        <span>禁言理由</span>
+        <input id="msg" type="text" placeholder="循环联调测试" autocomplete="off">
+      </label>
+      <label class="field">
+        <span>禁言时长 <em>秒</em>（0=默认）</span>
+        <input id="duration" type="number" min="0" step="1" value="0">
+      </label>
+    </section>
+
+    <section class="grid">
+      <label class="field">
+        <span>最大轮数 <em>0=无限</em></span>
+        <input id="maxRounds" type="number" min="0" step="1" value="0">
+      </label>
+      <label class="field">
+        <span>接口请求体</span>
+        <select id="useJson">
+          <option value="false">form-urlencoded</option>
+          <option value="true">application/json</option>
+        </select>
+      </label>
+    </section>
+
+    <label class="chk">
+      <input id="autoStart" type="checkbox">
+      <span>进入直播间后自动启动（按当前配置）</span>
+    </label>
+
+    <div class="stats">
+      <div class="stat"><b id="sRounds">0</b><span>轮次</span></div>
+      <div class="stat"><b id="sOk">0</b><span>成功</span></div>
+      <div class="stat"><b id="sFail">0</b><span>失败</span></div>
+      <div class="stat"><b id="sGap">—</b><span>解禁间隔</span></div>
+    </div>
+
+    <div class="bar">
+      <div class="bar-fill" id="barFill"></div>
+    </div>
+    <p class="hint" id="hint">准备就绪</p>
+
+    <section class="actions">
+      <button class="btn primary" id="btnStart">开始循环</button>
+      <button class="btn ghost" id="btnPause" disabled>暂停</button>
+      <button class="btn ghost" id="btnStop" disabled>停止</button>
+    </section>
+
+    <details class="log-wrap" open>
+      <summary>运行日志</summary>
+      <ul id="log" class="log"></ul>
+    </details>
+
+    <p class="foot">
+      循环在直播间页面主世界执行；关闭本弹窗不影响运行。
+      <span id="ver"></span>
+    </p>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>
