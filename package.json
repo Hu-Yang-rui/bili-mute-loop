@@ -2,7 +2,7 @@
   "name": "bili-mute-loop",
   "version": "1.0.0",
   "private": true,
-  "description": "Chrome MV3 扩展：B站直播间指定 UID 循环「禁言 → 0.5s 内解除禁言」",
+  "description": "Chrome MV3 扩展：B站直播间指定 UID 循环「禁言 → 0.5s 内解除禁言」，用于房管权限接口联调与时序验证。",
   "scripts": {
     "test": "node test/harness.js && node test/harness-pause.js",
     "test:loop": "node test/harness.js",
