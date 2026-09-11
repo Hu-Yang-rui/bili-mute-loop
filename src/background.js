@@ -16,7 +16,7 @@ const DEFAULT_CONFIG = {
   onlyRoom: "",          // 仅在该房间自动启动；留空 = 所有直播间
   unbanDelayMs: 300,     // 禁言成功 → 解禁 的间隔（硬上限 500）
   cycleIntervalMs: 800,  // 轮与轮之间的间隔
-  msg: "循环联调测试",
+  msg: "接口联调测试",   // 禁言理由：仅随禁言请求提交，解禁时置空；扩展不会把它发到聊天框
   mtype: 1,
   duration: 0,
   useJson: false,
