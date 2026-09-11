@@ -90,7 +90,8 @@ git clone https://github.com/Hu-Yang-rui/bili-mute-loop.git
 | 房间号 | 留空则自动读取当前页面内置的 `room_id` |
 | 禁言 → 解禁延迟 | 默认 `300ms`，**上限 500ms**（超出会被自动夹紧） |
 | 周期间隔 | 一轮结束后到下一轮开始的等待时间，默认 `800ms` |
-| 禁言理由 / 时长 | 传给接口的 `msg` / `duration`，`0` 表示默认时长 |
+| 禁言理由 | 即接口的 `msg` 字段，写入平台侧操作记录，供主播与房管查看。**仅在禁言时发送；解禁请求该字段必须为空串**，否则后端会当成一次新的禁言 |
+| 禁言时长 | 即接口的 `duration`，单位秒；`0` 表示按房间默认时长 |
 | 最大轮数 | `0` = 无限循环 |
 | 接口请求体 | `form-urlencoded`（默认）或 `application/json` |
 | 自动启动 | 进入直播间后按当前配置自动开始循环 |
@@ -186,9 +187,19 @@ MV3 的 service worker 会被浏览器随时回收，若把循环挂在 SW 上�
 git clone https://github.com/Hu-Yang-rui/bili-mute-loop.git && cd bili-mute-loop
 node test/harness.js         # 循环时序与请求体
 node test/harness-pause.js   # 暂停 / 继续语义
+node test/dump-requests.js   # 打印实际请求体，核对禁言理由字段
 ```
 
 两套测试共 **36 项断言**（`harness.js` 19 项 + `harness-pause.js` 17 项）。
+
+`dump-requests.js` 输出示例（可直接看到「禁言理由」只出现在禁言请求里，解禁时必为空串）：
+
+```
+[1] POST /xroom/v1/Room/room_silence   ← 禁言
+    请求体: {"room_id":"21452505","banned_uid":"10086","msg":"循环联调测试","mtype":"1","duration":"0","csrf":"..."}
+[2] POST /xroom/v1/Room/room_silence   ← 解禁
+    请求体: {"room_id":"21452505","banned_uid":"10086","msg":"","mtype":"1","duration":"0","csrf":"..."}
+```
 
 CI 在每次 push 与 PR 时自动执行语法检查、清单 JSON 校验与两套测试（见 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)）。
 
