@@ -1,14 +1,14 @@
 <h1 align="center">B站直播间 禁言 / 解禁 循环助手</h1>
 
 <p align="center">
-  <a href="https://github.com/Hu-Yang-rui/bili-mute-loop/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/Hu-Yang-rui/bili-mute-loop?label=release&color=FB7299"></a>
-  <a href="https://github.com/Hu-Yang-rui/bili-mute-loop/releases/latest"><img alt="Downloads" src="https://img.shields.io/github/downloads/Hu-Yang-rui/bili-mute-loop/total?label=downloads"></a>
+  <a href="https://github.com/Hu-Yang-rui/bili-mute-loop/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/Hu-Yang-rui/bili-mute-loop?label=release&color=FB7299&logo=github&logoColor=white"></a>
+  <a href="https://github.com/Hu-Yang-rui/bili-mute-loop/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/Hu-Yang-rui/bili-mute-loop/total?label=downloads&logo=github&logoColor=white"></a>
   <a href="https://github.com/Hu-Yang-rui/bili-mute-loop/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Hu-Yang-rui/bili-mute-loop/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/Hu-Yang-rui/bili-mute-loop/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/Hu-Yang-rui/bili-mute-loop?label=license"></a>
-  <img alt="Manifest V3" src="https://img.shields.io/badge/Manifest-V3-4285F4?logo=googlechrome&logoColor=white">
-  <img alt="Chrome" src="https://img.shields.io/badge/Chrome-%E2%89%A5%20111-34A853?logo=googlechrome&logoColor=white">
-  <img alt="JavaScript" src="https://img.shields.io/badge/JavaScript-ES2020-F7DF1E?logo=javascript&logoColor=black">
-  <a href="https://github.com/Hu-Yang-rui/bili-mute-loop/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/Hu-Yang-rui/bili-mute-loop?style=social"></a>
+  <a href="https://github.com/Hu-Yang-rui/bili-mute-loop"><img alt="Stars" src="https://img.shields.io/github/stars/Hu-Yang-rui/bili-mute-loop?label=stars&logo=github&logoColor=white&color=e3b341"></a>
+  <a href="https://github.com/Hu-Yang-rui/bili-mute-loop/search?l=javascript"><img alt="Language" src="https://img.shields.io/github/languages/top/Hu-Yang-rui/bili-mute-loop?label=language&logo=javascript&logoColor=black"></a>
+  <a href="#-下载安装"><img alt="Manifest V3" src="https://img.shields.io/badge/Manifest-V3-4285F4?logo=googlechrome&logoColor=white"></a>
+  <a href="#-下载安装"><img alt="Chrome" src="https://img.shields.io/badge/Chrome-%E2%89%A5%20111-34A853?logo=googlechrome&logoColor=white"></a>
 </p>
 
 <p align="center">
