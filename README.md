@@ -6,6 +6,7 @@
 ![Chrome](https://img.shields.io/badge/Chrome-%E2%89%A5%20111-34A853)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 ![Test](https://img.shields.io/badge/test-harness.js%20%2B%20harness--pause.js-brightgreen)
+![CI](https://github.com/Hu-Yang-rui/bili-mute-loop/actions/workflows/ci.yml/badge.svg)
 
 ## 用途与边界
 

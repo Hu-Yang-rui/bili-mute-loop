@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: 语法检查 + 仿真测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: 语法检查
+        run: |
+          node --check src/runtime.js
+          node --check src/page-bridge.js
+          node --check src/background.js
+          node --check src/popup.js
+          node --check test/harness.js
+          node --check test/harness-pause.js
+
+      - name: 清单 JSON 校验
+        run: node -e "JSON.parse(require('fs').readFileSync('manifest.json','utf8')); console.log('manifest.json OK')"
+
+      - name: 循环时序测试
+        run: node test/harness.js
+
+      - name: 暂停 / 继续测试
+        run: node test/harness-pause.js
