@@ -14,6 +14,9 @@ build/
 Thumbs.db
 desktop.ini
 
+# 本地排查产物（临时调试脚本）
+_dbg*.js
+
 # 本地私密文件（切勿提交：cookie、token、抓包结果）
 .env
 .env.*
