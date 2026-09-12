@@ -40,7 +40,10 @@ h1 { margin: 0; font-size: 13.5px; font-weight: 600; letter-spacing: .2px; }
 }
 .dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(62,207,142,.18); animation: pulse 1.4s infinite; }
 .dot.paused { background: var(--warn); box-shadow: 0 0 0 3px rgba(255,176,32,.18); }
+.dot.waiting { background: #4a90d9; box-shadow: 0 0 0 3px rgba(74,144,217,.18); animation: pulse 1.4s infinite; }
 .dot.err { background: var(--err); box-shadow: 0 0 0 3px rgba(255,95,109,.18); }
+.sub.live { color: var(--ok); }
+.sub.offline { color: var(--warn); }
 @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .45 } }
 
 main { padding: 12px; }
@@ -79,6 +82,10 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
 .bar-fill.paused {
   background: repeating-linear-gradient(45deg, var(--warn) 0 6px, #7a5a12 6px 12px);
   animation: marquee 1s linear infinite;
+}
+.bar-fill.waiting {
+  background: repeating-linear-gradient(45deg, #4a90d9 0 6px, #23405f 6px 12px);
+  animation: marquee 1.6s linear infinite;
 }
 @keyframes marquee { from { background-position: 0 0 } to { background-position: 12px 0 } }
 

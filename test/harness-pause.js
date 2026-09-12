@@ -132,6 +132,9 @@ const RUNTIME_CFG = {
 
   // ---- 6. 暂停状态下 stop 必须能退出（不能卡死） ----
   api.pause();
+  // 与前面同理：在途的那一轮会先跑完再挂起，等它结算完再取基准值，
+  // 否则会把「在途轮次完成」误判成「停止后又多跑了一轮」。
+  await sleep(400);
   const roundsAtStop = api.getState().rounds;
   const t0 = Date.now();
   const stopped = await Promise.race([

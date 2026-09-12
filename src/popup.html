@@ -43,17 +43,6 @@
 
     <section class="grid">
       <label class="field">
-        <span>禁言理由 <em>仅写入平台记录</em></span>
-        <input id="msg" type="text" placeholder="接口联调测试" autocomplete="off">
-      </label>
-      <label class="field">
-        <span>禁言时长 <em>秒</em>（0=默认）</span>
-        <input id="duration" type="number" min="0" step="1" value="0">
-      </label>
-    </section>
-
-    <section class="grid">
-      <label class="field">
         <span>最大轮数 <em>0=无限</em></span>
         <input id="maxRounds" type="number" min="0" step="1" value="0">
       </label>
@@ -65,6 +54,11 @@
         </select>
       </label>
     </section>
+
+    <label class="chk">
+      <input id="waitForLive" type="checkbox">
+      <span>未开播时等待开播后自动开始 <em>（每 15s 探一次，最多 30 分钟）</em></span>
+    </label>
 
     <label class="chk">
       <input id="autoStart" type="checkbox">

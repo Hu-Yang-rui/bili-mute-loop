@@ -1,12 +1,13 @@
 /**
- * test/dump-requests.js — 打印两种操作实际发出的请求体，用于核对「禁言理由」字段。
+ * test/dump-requests.js — 打印一次完整循环实际发出的全部请求。
  *
  * 运行： node test/dump-requests.js
  *
- * 它用与 harness.js 相同的沙箱跑真实 runtime.js，只是把 fetch 收到的
- * 请求体原样打印出来，便于肉眼确认：
- *   - 禁言：msg = 面板填写的理由，duration = 面板填写的时长
- *   - 解禁：msg = 空串，duration = 0
+ * 它用与 harness.js 相同的沙箱跑真实 runtime.js，把 fetch 收到的请求原样打印，
+ * 便于核对这些事实：
+ *   - 循环开始前会先探测一次房间开播状态（get_info，read-only）；
+ *   - 禁言与解禁共用 room_silence，靠 msg 是否为空 + duration 区分动作；
+ *   - 房管禁言不需要理由，两个动作的 msg 都提交空串。
  */
 
 const fs = require("fs");
@@ -19,11 +20,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const CFG = {
   uid: "10086",
   roomId: "21452505",
-  unbanDelayMs: 50,
+  unbanDelayMs: 60,
   cycleIntervalMs: 40,
-  msg: "循环联调测试",   // ← 面板「禁言理由」对应这个字段
   mtype: 1,
-  duration: 0,          // ← 面板「禁言时长」
+  duration: 0,
   useJson: false,
   maxRounds: 1,
   retry: 0,
@@ -44,14 +44,25 @@ const win = {
 };
 
 const fetchImpl = async (url, init) => {
+  const kind = url.includes("/room/v1/Room/get_info") ? "get_info"
+    : url.includes("room_silence") ? "room_silence"
+    : url.includes("QueryBlackListUser") ? "QueryBlackListUser"
+    : "其他";
   seen.push({
     t: new Date().toISOString().slice(11, 23),
+    kind,
     method: (init && init.method) || "GET",
     path: url.replace("https://api.live.bilibili.com", ""),
     contentType: init && init.headers && init.headers["Content-Type"],
     body: init && init.body
   });
   await sleep(8);
+  if (kind === "get_info") {
+    return {
+      status: 200,
+      text: async () => JSON.stringify({ code: 0, data: { room_id: 21452505, live_status: 1 } })
+    };
+  }
   return { status: 200, text: async () => JSON.stringify({ code: 0, message: "0", data: {} }) };
 };
 
@@ -64,35 +75,43 @@ ctx.globalThis = ctx;
 vm.createContext(ctx);
 vm.runInContext(code, ctx, { filename: "runtime.js" });
 
-(async () => {
-  win.__BML_LOOP__.start(CFG);
-  await sleep(500);
-  await win.__BML_LOOP__.stop();
+const pretty = (body) => {
+  if (!body) return "(无 body)";
+  const p = new URLSearchParams(body);
+  const o = {};
+  for (const k of ["room_id", "banned_uid", "msg", "mtype", "duration", "csrf"]) {
+    if (p.has(k)) o[k] = p.get(k) === "" ? "（空串）" : p.get(k);
+  }
+  return JSON.stringify(o);
+};
 
-  const dec = (body) => {
-    if (!body) return "(无 body)";
-    const p = new URLSearchParams(body);
-    const out = {};
-    for (const [k, v] of p.entries()) out[k] = v;
-    return JSON.stringify(out, null, 0)
-      .replace(/"msg":""/, '"msg":""   ← 空串：解禁')
-      .replace(/"msg":"([^"]+)"/, '"msg":"$1"   ← 理由：禁言');
-  };
+(async () => {
+  const api = win.__BML_LOOP__;
+  api.start(CFG);
+  for (let i = 0; i < 40 && api.getState().running; i++) await sleep(50);
 
   console.log("一次完整循环实际发出的请求：\n");
   seen.forEach((s, i) => {
-    const isUnban = s.body && new URLSearchParams(s.body).get("msg") === "";
+    const label = s.kind === "get_info" ? "探测房间开播状态（前置检查 · read-only）"
+      : s.kind === "QueryBlackListUser" ? "查询禁言状态（read-only）"
+      : "写入操作（禁言 / 解禁）";
     console.log(`  [${i + 1}] ${s.t}  ${s.method} ${s.path}`);
-    console.log(`      内容类型: ${s.contentType}`);
-    console.log(`      标签    : ${isUnban ? "解禁（msg 为空串）" : "禁言（msg = 面板填写的理由）"}`);
-    console.log(`      请求体  : ${dec(s.body)}`);
+    console.log(`      用途    : ${label}`);
+    if (s.contentType) console.log(`      内容类型: ${s.contentType}`);
+    console.log(`      请求体  : ${pretty(s.body)}`);
     console.log("");
   });
 
-  const unban = seen.find((s) => s.body && new URLSearchParams(s.body).get("msg") === "");
-  const ban = seen.find((s) => s.body && new URLSearchParams(s.body).get("msg") !== "");
+  const writes = seen.filter((s) => s.kind === "room_silence");
+  const ban = writes[0];
+  const unban = writes[1];
+  const g = (r, k) => (r && r.body ? new URLSearchParams(r.body).get(k) : undefined);
+
   console.log("结论：");
-  console.log(`  禁言 msg      = ${JSON.stringify(ban && new URLSearchParams(ban.body).get("msg"))}  （面板填写的「禁言理由」）`);
-  console.log(`  解禁 msg      = ${JSON.stringify(unban && new URLSearchParams(unban.body).get("msg"))}  （必须为空，否则会被后端当成再次禁言）`);
-  console.log(`  解禁 duration = ${JSON.stringify(unban && new URLSearchParams(unban.body).get("duration"))}`);
+  console.log(`  写操作次数    : ${writes.length}（每轮 = 1 次禁言 + 1 次解禁）`);
+  console.log(`  禁言 msg      : ${JSON.stringify(g(ban, "msg"))}`);
+  console.log(`  解禁 msg      : ${JSON.stringify(g(unban, "msg"))}`);
+  console.log(`  解禁 duration : ${JSON.stringify(g(unban, "duration"))}`);
+  console.log("  依据          : room_silence 靠 msg 是否为空 + duration 区分动作；");
+  console.log("                  房管禁言不需要理由，故两个动作都提交空串 msg。");
 })();

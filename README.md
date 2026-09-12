@@ -90,15 +90,39 @@ git clone https://github.com/Hu-Yang-rui/bili-mute-loop.git
 | 房间号 | 留空则自动读取当前页面内置的 `room_id` |
 | 禁言 → 解禁延迟 | 默认 `300ms`，**上限 500ms**（超出会被自动夹紧） |
 | 周期间隔 | 一轮结束后到下一轮开始的等待时间，默认 `800ms` |
-| 禁言理由 | 即接口的 `msg` 字段，写入平台侧操作记录，供主播与房管查看。**仅在禁言时发送；解禁请求该字段必须为空串**，否则后端会当成一次新的禁言 |
 | 禁言时长 | 即接口的 `duration`，单位秒；`0` 表示按房间默认时长 |
 | 最大轮数 | `0` = 无限循环 |
 | 接口请求体 | `form-urlencoded`（默认）或 `application/json` |
+| 未开播时等待开播 | 房间未开播时挂起，每 15s 探测一次，开播后自动开始循环（最多等 30 分钟） |
 | 自动启动 | 进入直播间后按当前配置自动开始循环 |
+
+面板**不提供「禁言理由」**：房管禁言不需要理由，接口里的 `msg` 字段只是个备注位，
+扩展统一提交空串（同时它也是「解禁」的语义标识）。详见「接口」一节。
 
 3. 点击 **开始循环**，面板实时显示轮次 / 成功 / 失败 / 实测解禁间隔
 4. 点击 **暂停 / 继续** 临时挂起或恢复
 5. 点击 **停止** 结束循环（当前轮结束后退出，不留中间态）
+
+### 未开播的直播间
+
+**未开播时平台不接受禁言操作** —— 这是平台侧的限制，不是扩展的缺陷。扩展对此的处理：
+
+| 情形 | 行为 |
+| --- | --- |
+| 启动时已知未开播，且**未**勾选等待 | 立即拦下并给出原因，**不发出任何禁言请求**，日志显示 `房间未开播（<房间号>）` |
+| 启动时已知未开播，且**已**勾选等待 | 进入 `waiting-live` 状态挂起（面板指示灯转蓝），每 15s 探测一次，开播后自动开始循环；最多等 30 分钟 |
+| 循环过程中房间下播 | 本轮失败并按退避等待，**下播期间不再重复打禁言接口**；复播后自动接续 |
+| 拿不到 `live_status`（状态未知） | 不拦截，照常执行（避免因为探测接口异常而误判） |
+
+面板上方会显示房间状态（`直播中` / `轮播中` / `未开播`），打开面板时会自动探测一次。
+探测按钮可随时手动刷新。
+
+> 实现细节：开播状态通过 `GET /room/v1/Room/get_info` 的 `live_status` 判断
+> （`0` 未开播 / `1` 直播中 / `2` 轮播）。该结果会缓存 10 秒，避免每轮都多打一次接口
+> （否则一轮会从 2 个请求涨到 3 个）；如果你更看重实时性而非请求量，可把
+> `src/runtime.js` 里的 `ROOM_INFO_TTL_MS` 调小。
+> 缓存之内房间下播时，拒绝会先来自接口本身（业务码 `1`「该直播间未开播」），
+> 扩展收到后主动清空缓存，下一轮改用实时探测，从而给出明确的 `-404` 判定。
 
 ### 暂停 / 继续
 
@@ -122,18 +146,20 @@ __BML_LOOP__.getState();  // { running, paused, rounds, okRounds, failRounds, ..
 
 ### 接口
 
-| 动作 | 方法与路径 |
-| --- | --- |
-| 禁言 | `POST {apiBase}/xroom/v1/Room/room_silence` |
-| 解禁 | `POST {apiBase}/xroom/v1/Room/room_silence`，`duration=0` 且 `msg=""` |
-| 查询状态 | `GET {apiBase}/xlive/web-ucenter/v1/banned/QueryBlackListUser?room_id=&uid=` |
+| 动作 | 方法与路径 | 类型 |
+| --- | --- | --- |
+| 禁言 | `POST {apiBase}/xroom/v1/Room/room_silence` | 写入 |
+| 解禁 | `POST {apiBase}/xroom/v1/Room/room_silence`，`duration=0` 且 `msg=""` | 写入 |
+| 查询禁言状态 | `GET {apiBase}/xlive/web-ucenter/v1/banned/QueryBlackListUser?room_id=&uid=` | 只读 |
+| 查询开播状态 | `GET {apiBase}/room/v1/Room/get_info?room_id=` | 只读 |
 
-禁言与解禁共用同一入口，请求体字段：
+禁言与解禁共用同一入口，靠 `msg` 是否为空 + `duration` 区分动作。请求体字段：
 
 ```
 room_id     直播间房间号（URL 为短号时自动经 get_info 换取真实房间号）
 banned_uid  目标用户 UID
-msg         禁言理由（解禁时为空串）
+msg         恒为空串。房管禁言不需要理由，该字段只是备注位；
+            同时它是「解禁」的语义标识，因此不能省略不传
 mtype       1 = 直播间禁言
 duration    禁言时长（秒），0 = 解除禁言 / 默认时长
 csrf        取自 cookie bili_jct，每次请求前动态读取
@@ -162,31 +188,17 @@ t2 ── 发送解禁请求 ──► t3 收到 code:0
 
 面板上的 **解禁间隔** 显示的是真实测量的 `unbanGapMs`，可用于直接核验约束是否满足。
 
-### 禁言理由（`msg`）会不会显示在聊天框
+### 网络出口
 
-结论分两层，需要区分清楚：
+扩展对外只有四个请求，全部是管理类接口，**不存在**任何弹幕 / 聊天发送接口（如 `/msg/send`）的调用：
 
-**能确定的（扩展侧）**：本扩展**不会**向聊天框或弹幕发送任何内容。它对外的网络出口只有三个，全部是管理类接口：
-
-| 出口 | 用途 | 是否写入聊天 |
+| 出口 | 用途 | 写入聊天 |
 | --- | --- | --- |
 | `POST /xroom/v1/Room/room_silence` | 禁言 / 解禁 | 否 |
 | `GET /xlive/web-ucenter/v1/banned/QueryBlackListUser` | 查询禁言状态 | 否 |
-| `GET /room/v1/Room/get_info` | 短房号换真实房号 | 否 |
+| `GET /room/v1/Room/get_info` | 开播状态 / 短房号换真实房号 | 否 |
 
-代码里不存在任何弹幕发送接口（如 `/msg/send`）的调用，`msg` 字段只作为 `room_silence` 的请求体参数提交。
-
-**无法从代码确定的（平台侧）**：`msg` 提交给服务器之后如何使用，由 B 站后端与直播间接决定，外部无法通过阅读代码得出结论。可以合理推断它进入的是**房管/主播侧的操作记录**（禁言列表、房管日志），而不是面向全体观众的聊天流；但这一条属于推断，本文档不做保证。
-
-面板上的 **运行日志** 是扩展自己的本地日志（面板内那一列），与平台的任何记录都无关，也不会同步到直播间。
-
-**想确证的话，做一次标记探针**（最直接的办法）：
-
-1. 把「禁言理由」改成独一无二的字符串，例如 `PROBE_20250911_A`
-2. 运行 1 轮，然后用主播端或普通观众端分别查看：
-   - **聊天框 / 弹幕历史**里搜这个字符串 → 搜不到，说明理由不进入聊天流
-   - **主播端禁言列表 / 房管操作记录**里搜 → 若只在这里出现，即证实它属于管理侧记录
-3. 把探针字符串换成正常理由，避免后续流水里留下测试字样
+面板上的 **运行日志** 是扩展自己的本地日志，与平台侧的任何记录无关。
 
 ### 为什么循环跑在页面主世界
 
@@ -207,54 +219,63 @@ MV3 的 service worker 会被浏览器随时回收，若把循环挂在 SW 上�
 
 ## ✅ 测试验证
 
-扩展的核心逻辑可在纯 Node 环境下仿真验证，无需浏览器。两套测试用 `vm` 模块 mock `window / document / cookie / fetch`，**直接运行真实的 `src/runtime.js`**，而不是复制的测试替身：
+扩展的核心逻辑可在纯 Node 环境下仿真验证，无需浏览器。三套测试用 `vm` 模块 mock `window / document / cookie / fetch`，**直接运行真实的 `src/runtime.js`**（不是复制的测试替身），并可通过 mock 控制房间开播状态，模拟开播 / 下播 / 复播：
 
 ```bash
 git clone https://github.com/Hu-Yang-rui/bili-mute-loop.git && cd bili-mute-loop
 node test/harness.js         # 循环时序与请求体
 node test/harness-pause.js   # 暂停 / 继续语义
-node test/dump-requests.js   # 打印实际请求体，核对禁言理由字段
+node test/harness-live.js    # 未开播 / 等待开播 / 中途下播
+node test/dump-requests.js   # 打印实际请求，核对提交的字段
 ```
 
-两套测试共 **36 项断言**（`harness.js` 19 项 + `harness-pause.js` 17 项）。
+三套测试共 **61 项断言**（`harness.js` 22 项 + `harness-pause.js` 17 项 + `harness-live.js` 22 项）。
 
-`dump-requests.js` 输出示例（可直接看到「禁言理由」只出现在禁言请求里，解禁时必为空串）：
+`dump-requests.js` 输出示例（一次循环只探测一次房间信息，两个写操作都提交空 `msg`）：
 
 ```
-[1] POST /xroom/v1/Room/room_silence   ← 禁言
-    请求体: {"room_id":"21452505","banned_uid":"10086","msg":"循环联调测试","mtype":"1","duration":"0","csrf":"..."}
-[2] POST /xroom/v1/Room/room_silence   ← 解禁
-    请求体: {"room_id":"21452505","banned_uid":"10086","msg":"","mtype":"1","duration":"0","csrf":"..."}
+[1] GET  /room/v1/Room/get_info?room_id=21452505      ← 前置检查（只读）
+[2] POST /xroom/v1/Room/room_silence                  ← 禁言
+    请求体: {"room_id":"21452505","banned_uid":"10086","msg":"（空串）","mtype":"1","duration":"0","csrf":"..."}
+[3] POST /xroom/v1/Room/room_silence                  ← 解禁
+    请求体: {"room_id":"21452505","banned_uid":"10086","msg":"（空串）","mtype":"1","duration":"0","csrf":"..."}
 ```
 
-CI 在每次 push 与 PR 时自动执行语法检查、清单 JSON 校验与两套测试（见 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)）。
+CI 在每次 push 与 PR 时自动执行语法检查、JSON 校验与三套测试（见 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)）。
 
 ### 覆盖点
 
 | 测试 | 断言 |
 | --- | --- |
-| `harness.js` | 每轮顺序恒为 `禁言 → 解禁`；实测间隔 ≤ 500ms；`-509` 限频指数退避后成功；`unbanDelayMs=999` 被夹紧；请求体字段正确（`csrf` / `banned_uid` / `room_id` / 解禁时 `msg=""` 且 `duration=0`） |
+| `harness.js` | 每轮顺序恒为 `禁言 → 解禁`；按请求实测时刻计算的间隔 ≤ 500ms；`-509` 限频指数退避后成功；`unbanDelayMs=999` 被夹紧；请求体字段与取值正确（含 `msg` 恒为空串）；启动前会探测开播状态 |
 | `harness-pause.js` | 暂停最多让在途 1 轮跑完，之后计数冻结；暂停期间 `running=true`；`resume` 后计数继续累加；暂停中 `stop()` 正常退出且不多跑轮次；`postMessage` 协议 `pause`/`resume` 正确回 ack |
+| `harness-live.js` | 未开播且未勾选等待：启动即被拦下、报 `-404`、**不发任何禁言请求**；勾选等待：进入 `waiting-live` 并持续探测，开播后自动开始；中途下播：本轮失败并按退避等待、复播自动接续；`live_status` 未知时不误拦；`probe()` 在未开播时跳过黑名单查询 |
 
 ### 最近一次运行输出
 
 ```
-[PASS] 每轮 禁言→解禁 间隔 ≤ 500ms  → 466, 468, 465 ms
-[PASS] 每对 禁言→解禁 间隔 ≤ 500ms  → 484, 484, 481 ms
-[PASS] 解禁请求 msg 为空且 duration=0（不会被误判为再次禁言）
+[PASS] 每对 禁言→解禁 间隔 ≤ 500ms（按请求实测时刻计算）  → 461, 459, 465 ms
+[PASS] 禁言请求不再携带理由（msg 恒为空串）
+[PASS] 启动前探测了房间开播状态（get_info）
 全部通过 ✅
 
 [PASS] 挂起后 900ms 内没有开始新一轮  → 4 → 4
 [PASS] 暂停状态下 stop() 能正常退出（<3s）  → 耗时 65ms，running=false
 暂停/继续 全部通过 ✅
+
+[PASS] 未开播时没有发出任何禁言/解禁请求  → room_silence 调用 0 次
+[PASS] 等待期间处于 waiting-live 状态  → phase=waiting-live running=true
+[PASS] 下播期间产生了失败轮次，且日志中出现 -404（本地实时探测判定）  → failRounds=5 日志错误码=[1,-404]
+未开播 / 等待开播 全部通过 ✅
 ```
 
-### 仿真测试发现并修复的两个缺陷
+### 仿真测试发现并修复的缺陷
 
-仿真环境让以下两个缺陷得以复现，它们已修复并纳入回归断言：
+仿真环境让以下缺陷得以复现，它们已修复并纳入回归断言：
 
-1. **`msg` 默认值覆盖导致解禁被误判为再次禁言** — 原实现写作 `msg: msg || CFG.msg`，解禁传入的空串被默认理由填充，接口会把请求当成一次新的禁言。改为 `msg === undefined ? CFG.msg : msg`。
+1. **`msg` 默认值覆盖导致解禁被误判为再次禁言** — 原实现写作 `msg: msg || CFG.msg`，解禁传入的空串被默认理由填充，接口会把请求当成一次新的禁言。现在两个动作统一提交空串，不再有默认值回退。
 2. **定时抖动导致解禁间隔越过 500ms** — 原实现用 `sleep(unbanDelayMs)`，实测间隔 503–530ms。改为绝对时间点自校正并预扣抖动余量。
+3. **未开播直播间会空转打接口** — 未开播时禁言接口必然失败，原实现仍每轮重试一次。现在启动前先探测开播状态并给出明确原因，也支持等待开播后自动开始。
 
 ## 🛡 稳定性设计
 
@@ -273,6 +294,9 @@ CI 在每次 push 与 PR 时自动执行语法检查、清单 JSON 校验与两�
 | 现象 | 原因与处理 |
 | --- | --- |
 | `内容脚本未就绪，请刷新直播间页面后重试` | 扩展新装或重载后页面未刷新；刷新直播间页面即可 |
+| `房间未开播（…）：未开播时平台的禁言接口不接受操作` | 平台限制：未开播的直播间不能禁言。等开播，或勾选面板上的「未开播时等待开播」 |
+| `code=-404` 且状态显示「未开播」 | 同上；循环进行中房间下播也会出现，复播后会自动接续 |
+| `code=1` 该直播间未开播 | 与 `-404` 同源：房间在 10s 探测缓存有效期内下播，第一轮由接口拒绝，扩展随后会重新实时探测 |
 | `未取到 bili_jct（请先在该浏览器登录 B 站）` | 未登录或 cookie 被清理；重新登录 |
 | `code=-101` 未登录 / `code=-403` 无权限 | 当前账号在该房间没有房管权限 |
 | `code=-412` 请求被拦截 | 触发风控；降低频率（加大周期间隔或延迟）后重试 |
@@ -310,8 +334,14 @@ bili-mute-loop/
 │  └─ popup.html/.css/.js   控制面板 UI
 ├─ test/
 │  ├─ harness.js            循环时序与请求体仿真测试
-│  └─ harness-pause.js      暂停 / 继续语义测试
-├─ .github/workflows/ci.yml CI：语法检查 + 清单校验 + 两套测试
+│  ├─ harness-pause.js      暂停 / 继续语义测试
+│  ├─ harness-live.js       未开播 / 等待开播 / 中途下播测试
+│  └─ dump-requests.js      打印实际请求，核对提交字段
+├─ tools/
+│  ├─ pack.js               生成符合 ZIP 规范的 Release 压缩包
+│  ├─ release-notes.js      UTF-8 写入 Release 正文
+│  └─ set-repo-meta.js      同步仓库描述 / topics
+├─ .github/workflows/ci.yml CI：语法检查 + JSON 校验 + 三套测试
 ├─ LICENSE
 └─ README.md
 ```
@@ -319,13 +349,18 @@ bili-mute-loop/
 ## 🤝 开发与贡献
 
 ```bash
-node test/harness.js         # 循环时序
+node test/harness.js         # 循环时序与请求体
 node test/harness-pause.js   # 暂停 / 继续
+node test/harness-live.js    # 未开播 / 等待开播 / 中途下播
+node test/dump-requests.js   # 打印实际请求
+node tools/pack.js           # 生成 Release 压缩包
 ```
+
+也可以用 `npm test`（依次跑三套测试）或 `npm run verify`（语法检查 + 测试）。
 
 修改 `src/` 后需在 `chrome://extensions/` 点击该扩展的刷新按钮，并刷新直播间页面方可生效。
 
-欢迎提交 Issue 与 PR，尤其欢迎以下方向的实测数据：不同房间的接口返回差异、风控阈值与限频边界、其他平台的同类时序场景。
+欢迎提交 Issue 与 PR，尤其欢迎以下方向的实测数据：**不同开播状态下接口的返回差异**、风控阈值与限频边界、其他平台的同类时序场景。
 
 ## 📄 许可证
 

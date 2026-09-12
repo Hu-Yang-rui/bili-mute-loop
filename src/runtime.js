@@ -32,9 +32,6 @@
     roomId: "",          // 房间号；留空 = 使用页面内置的 room_id
     unbanDelayMs: 300,   // 禁言成功 → 解禁请求 的等待毫秒数（硬上限 500，实际发出会再提前 UNBAN_SAFETY_MS）
     cycleIntervalMs: 800,// 一轮「禁言+解禁」完成 → 下一轮开始 的间隔
-    // 禁言理由：见下方 setSilence() 注释。默认值刻意保持中性、可辨识，
-    // 便于事后在平台操作记录里按关键词定位；它不会被本扩展发到聊天框。
-    msg: "接口联调测试",
     mtype: 1,            // 禁言类型：1=直播间禁言
     duration: 0,         // 禁言时长（秒），0 = 默认/永久
     useJson: false,      // true = 以 JSON body 发送（部分接口入口）
@@ -79,6 +76,10 @@
    * 因此把用户配置值整体提前 UNBAN_SAFETY_MS，保证端到端实测间隔仍 < 500ms。
    */
   const UNBAN_SAFETY_MS = 45;
+
+  /** 未开播时等待开播的轮询间隔与总时长上限 */
+  const WAIT_LIVE_POLL_MS = 15000;              // 15 秒探一次
+  const WAIT_LIVE_MAX_MS = 30 * 60 * 1000;      // 最多等 30 分钟
 
   /** 把用户配置夹紧到 [0, HARD_UNBAN_LIMIT_MS]，超出部分留作抖动余量 */
   function clampUnbanDelay(v) {
@@ -125,17 +126,94 @@
     return m ? m[1] : "";
   }
 
-  /** URL 里是短号时，用 get_info 换成真实房间号（接口只认真实号） */
-  async function resolveRoomIdAsync() {
+  /**
+   * 解析真实房间号，同时尽量带回开播状态。
+   * URL 里是短号时用 get_info 换取真实房间号（接口只认真实号）。
+   *
+   * 返回 { roomId, liveStatus }
+   *   liveStatus: 1 = 正在直播，2 = 轮播，0 = 未开播，null = 未知
+   */
+  async function resolveRoomInfo() {
     const id = resolveRoomId();
-    if (!id || CFG.roomId) return id;
+    if (!id) return { roomId: "", liveStatus: null };
+
     try {
       const d = await requestWithRetry(
         "/room/v1/Room/get_info?room_id=" + encodeURIComponent(id), { method: "GET" });
-      const real = d && d.data && d.data.room_id;
-      if (real) return String(real);
-    } catch (_) { /* 短号也能直接用的情况很多，失败就沿用原值 */ }
-    return id;
+      const data = (d && d.data) || {};
+      const lsRaw = data.live_status;
+      const liveStatus = lsRaw === undefined || lsRaw === null ? null : Number(lsRaw);
+      if (!CFG.roomId && data.room_id) return { roomId: String(data.room_id), liveStatus };
+      return { roomId: id, liveStatus };
+    } catch (_) {
+      // 短号常常也能直接用，失败就沿用原值；开播状态标记为未知
+      return { roomId: id, liveStatus: null };
+    }
+  }
+
+  /**
+   * 带短缓存的房间信息。
+   * 每轮都重新探测一次开播状态会让请求量翻倍（一轮 = 1 次 get_info + 2 次 room_silence），
+   * 因此循环内的前置检查复用 ROOM_INFO_TTL_MS 内的结果；
+   * 面板的「探测」按钮传 { force: true } 强制刷新，保证用户看到的是实时状态。
+   */
+  const ROOM_INFO_TTL_MS = 10000;
+  let roomInfoCache = null;   // { roomId, liveStatus, at, key }
+
+  async function getRoomInfo({ force = false } = {}) {
+    const key = resolveRoomId();
+    if (!force && roomInfoCache && roomInfoCache.key === key &&
+        (now() - roomInfoCache.at) < ROOM_INFO_TTL_MS) {
+      return roomInfoCache;
+    }
+    const info = await resolveRoomInfo();
+    roomInfoCache = { roomId: info.roomId, liveStatus: info.liveStatus, at: now(), key };
+    return roomInfoCache;
+  }
+
+  /** 开播状态文案 */
+  const LIVE_STATUS_TEXT = {
+    0: "未开播",
+    1: "直播中",
+    2: "轮播中"
+  };
+  const describeLive = (s) => (s === null || s === undefined ? "未知" : (LIVE_STATUS_TEXT[s] || ("live_status=" + s)));
+
+  /**
+   * 房间是否可以执行禁言。
+   * 未开播（live_status = 0）时平台的禁言接口不接受操作，
+   * 提前拦下并给出明确原因，避免循环里反复报出含义不清的业务错误码。
+   */
+  async function ensureRoomOperable() {
+    const { roomId, liveStatus } = await getRoomInfo();
+    if (!roomId) throw biliError(-400, "未取到房间号，请手动填写");
+
+    // live_status === 0 说明是本地已知的「未开播」，直接拦下。
+    // 注意存在 10s 短缓存：房间可能在缓存有效期内下播，此时本地状态仍是 1，
+    // 由下面的接口错误分支兜底（见 runOneRound 的 catch）。
+    if (liveStatus === 0) {
+      throw biliError(-404, ROOM_OFFLINE_MSG(roomId));
+    }
+    return { roomId, liveStatus };
+  }
+
+  const ROOM_OFFLINE_MSG = (roomId) =>
+    "房间未开播（" + roomId + "），平台的禁言接口不接受未开播房间的操作";
+
+  /**
+   * 开播前置检查（启动时调用一次，带超时）。
+   * 缓存里若已是「未开播」，无需再请求接口即可判定。
+   */
+  async function preflightLiveCheck() {
+    const id = resolveRoomId();
+    if (!id) throw biliError(-400, "未取到房间号，请手动填写");
+    if (!getCsrf()) throw biliError(-101, "未取到 bili_jct（请先在该浏览器登录 B 站）");
+
+    if (roomInfoCache && roomInfoCache.key === id &&
+        (now() - roomInfoCache.at) < ROOM_INFO_TTL_MS && roomInfoCache.liveStatus === 0) {
+      return { roomId: roomInfoCache.roomId, liveStatus: 0 };
+    }
+    return await ensureRoomOperable();
   }
 
   function biliError(code, message) {
@@ -202,22 +280,30 @@
     throw lastErr;
   }
 
-  async function fetchRemoteConfig() {
+  async function fetchRemoteConfig({ requireLive = true } = {}) {
     // 接口需要登录态与 csrf，这里只做前置校验，避免无意义请求
     const csrf = getCsrf();
     if (!csrf) throw biliError(-101, "未取到 bili_jct（请先在该浏览器登录 B 站）");
-    const roomId = await resolveRoomIdAsync();
+    if (requireLive) return Object.assign({ csrf }, await ensureRoomOperable());
+    const { roomId, liveStatus } = await getRoomInfo();
     if (!roomId) throw biliError(-400, "未取到房间号，请手动填写");
-    return { csrf, roomId };
+    return { csrf, roomId, liveStatus };
   }
 
-  async function setSilence({ roomId, uid, seconds, csrf, msg, mtype, useJson }) {
+  /**
+   * 提交禁言 / 解禁。
+   *
+   * 关于 msg（禁言理由）：房管禁言不需要填写理由，接口也只把它当作操作记录的
+   * 备注字段，因此本扩展两个动作都提交空串。空串同时是「解禁」的语义标识
+   * （禁言与解禁共用 room_silence，靠 msg 是否为空 + duration 区分），
+   * 所以这里不能改成"省略该字段"——省略会让后端无法判定为解禁。
+   * 也不要写成 `msg || CFG.msg` 这类默认值回退，否则解禁会被当成再次禁言。
+   */
+  async function setSilence({ roomId, uid, seconds, csrf, mtype, useJson }) {
     const payload = {
       room_id: roomId,
       banned_uid: Number(uid),
-      // 注意：解禁时 msg 必须为空串，不能用 `msg || CFG.msg`，
-      // 否则会被默认理由覆盖，导致解禁请求被后端当成一次新的禁言。
-      msg: msg === undefined ? CFG.msg : msg,
+      msg: "",
       mtype: Number(mtype == null ? CFG.mtype : mtype),
       duration: Number(seconds | 0),
       csrf
@@ -226,7 +312,7 @@
   }
 
   const ban = (o) => setSilence(Object.assign({}, o, { seconds: o.seconds > 0 ? o.seconds : 0 }));
-  const unban = (o) => setSilence(Object.assign({}, o, { seconds: 0, msg: "" }));
+  const unban = (o) => setSilence(Object.assign({}, o, { seconds: 0 }));
 
   async function queryBanned(roomId, uid) {
     const d = await requestWithRetry(API.check(roomId, uid), { method: "GET" });
@@ -239,6 +325,9 @@
   const state = {
     running: false,
     paused: false,        // 暂停：保留全部计数，仅在「一轮边界」挂起
+    phase: "idle",        // idle | starting | waiting-live | running
+    roomId: "",
+    liveStatus: null,     // 0 未开播 / 1 直播中 / 2 轮播 / null 未知
     rounds: 0,
     okRounds: 0,
     failRounds: 0,
@@ -258,6 +347,8 @@
       running: state.running,
       paused: state.paused,
       pausedAt: state.pausedAt,
+      phase: state.phase,
+      waitingLive: state.phase === "waiting-live",
       rounds: state.rounds,
       okRounds: state.okRounds,
       failRounds: state.failRounds,
@@ -266,10 +357,13 @@
       startedAt: state.startedAt,
       injectedAt: state.injectedAt,
       uid: cfgLive.uid,
-      roomId: resolveRoomId(),
+      roomId: state.roomId || resolveRoomId(),
+      liveStatus: state.liveStatus,
+      liveStatusText: describeLive(state.liveStatus),
       unbanDelayMs: cfgLive.unbanDelayMs,
       cycleIntervalMs: cfgLive.cycleIntervalMs,
-      maxRounds: cfgLive.maxRounds
+      maxRounds: cfgLive.maxRounds,
+      waitForLive: !!cfgLive.waitForLive
     };
   }
   function emitStatus() { post("status", snapshot()); }
@@ -286,7 +380,7 @@
     try {
       await ban({
         roomId, uid: cfgLive.uid, seconds: cfgLive.duration, csrf,
-        msg: cfgLive.msg, mtype: cfgLive.mtype, useJson
+        mtype: cfgLive.mtype, useJson
       });
     } catch (e) {
       e.stage = "ban";
@@ -336,16 +430,92 @@
     }
   }
 
+  /**
+   * 开播前置检查。
+   *
+   * 未开播的直播间，平台的禁言接口不接受操作，直接跑循环只会反复报出
+   * 含义不清的业务错误码。这里先探一次 live_status：
+   *   - 未开播且未勾选 waitForLive → 直接给出明确原因并结束，不空转打接口
+   *   - 未开播且勾选了 waitForLive → 每隔 WAIT_LIVE_POLL_MS 轮询一次，
+   *     开播后自动进入循环（上限 WAIT_LIVE_MAX_MS）
+   */
+  async function ensureLiveBeforeLoop() {
+    let first = true;
+    const deadline = now() + WAIT_LIVE_MAX_MS;
+
+    for (;;) {
+      if (state.stopping) return null;
+
+      let info;
+      try {
+        // 等待开播期间必须拿实时状态，绕过短缓存，否则会一直看到缓存里那个「未开播」
+        roomInfoCache = null;
+        info = await fetchRemoteConfig({ requireLive: false });
+      } catch (e) {
+        throw e; // 缺少登录态等前置问题，直接抛出
+      }
+
+      state.roomId = info.roomId;
+      state.liveStatus = info.liveStatus;
+
+      if (info.liveStatus !== 0) {
+        log("info", "房间状态：" + describeLive(info.liveStatus) +
+          "，开始循环（" + info.roomId + "）");
+        emitStatus();
+        return info;
+      }
+
+      if (!cfgLive.waitForLive) {
+        throw biliError(-404, "房间未开播（" + info.roomId + "）：未开播时平台的禁言接口不接受操作。" +
+          "可勾选面板上的「未开播时等待开播」后重试");
+      }
+
+      if (first) {
+        log("info", "房间未开播（" + info.roomId + "），已进入等待，开播后自动开始循环");
+        first = false;
+      }
+      state.phase = "waiting-live";
+      emitStatus();
+
+      if (now() > deadline) {
+        throw biliError(-404, "等待开播超时（已等待 " + Math.round(WAIT_LIVE_MAX_MS / 60000) +
+          " 分钟），房间仍未开播");
+      }
+      await sleep(WAIT_LIVE_POLL_MS);
+    }
+  }
+
   async function loop() {
     state.running = true;
     state.stopping = false;
     state.paused = false;
     state.pausedAt = 0;
+    state.phase = "starting";
+    state.roomId = resolveRoomId();
+    state.liveStatus = null;
     state.startedAt = now();
     state.rounds = 0; state.okRounds = 0; state.failRounds = 0; state.lastError = null;
     emitStatus();
-    log("info", "循环开始：room=" + resolveRoomId() + " uid=" + cfgLive.uid +
+    log("info", "循环启动：room=" + (state.roomId || "(待解析)") + " uid=" + cfgLive.uid +
       " 解禁延迟=" + cfgLive.unbanDelayMs + "ms 周期间隔=" + cfgLive.cycleIntervalMs + "ms");
+
+    // 开播前置检查（未开播的房间无法执行禁言）
+    try {
+      const info = await ensureLiveBeforeLoop();
+      if (!info) { /* 等待期间被停止 */ }
+    } catch (e) {
+      state.lastError = { stage: "preflight", code: e.biliCode, message: String(e.message || e) };
+      log("err", "启动前置检查失败：" + (e.message || e));
+      state.running = false;
+      state.phase = "idle";
+      const ss = snapshot();
+      post("stopped", ss);
+      emitStatus();
+      return ss;
+    }
+
+    state.phase = "running";
+    emitStatus();
 
     let i = 0;
     while (!state.stopping) {
@@ -359,11 +529,27 @@
       } catch (e) {
         state.rounds = i;
         state.failRounds++;
-        state.lastError = { stage: e.stage || "unknown", code: e.biliCode, message: String(e.message || e) };
-        log("err", "第 " + i + " 轮失败[" + (e.stage || "?") + "]: " + (e.biliCode != null ? "code=" + e.biliCode + " " : "") + (e.message || e));
-        // 风控/登录态问题：退避久一点，避免连续打接口
+        state.lastError = {
+          stage: e.stage || "unknown",
+          code: e.biliCode == null ? null : e.biliCode,
+          message: String(e.message || e)
+        };
+        log("err", "第 " + i + " 轮失败[" + (e.stage || "?") + "]: " +
+          (e.biliCode != null ? "code=" + e.biliCode + " " : "") + (e.message || e),
+          { code: e.biliCode == null ? null : e.biliCode, stage: e.stage || "unknown" });
+        // 风控/登录态：退避久一点，避免连续打接口
         if (e.biliCode === -412 || e.biliCode === -509 || e.biliCode === -101) {
           await sleep(1500);
+        }
+
+        // 禁言阶段失败时丢掉房间信息短缓存：
+        // 房间可能在缓存有效期内下播，此时本地 live_status 仍写着「直播中」，
+        // 而真实的拒绝来自接口本身（例如业务码 1「该直播间未开播」）。
+        // 清缓存后下一轮会重新实时探测，从而得到明确的 -404 判定；复播后自动接续。
+        if (e.stage === "ban") roomInfoCache = null;
+
+        if (e.biliCode === -404 || e.stage === "ban") {
+          await sleep(Math.min(WAIT_LIVE_POLL_MS, 5000));
         }
       }
       emitStatus();
@@ -381,6 +567,7 @@
     }
 
     state.paused = false;
+    state.phase = "idle";
 
     state.running = false;
     const summary = snapshot();
@@ -433,12 +620,39 @@
       emitStatus();
       return { ok: true, state: snapshot() };
     },
-    /** 单次探测：查当前房间对目标 UID 的黑名单状态 */
+    /**
+     * 单次探测：房间开播状态 + 目标 UID 当前是否在黑名单中。
+     * 未开播时不再请求黑名单接口（未开播房间该接口无意义）。
+     */
     async probe(userCfg) {
       cfgLive = Object.assign({}, cfgLive, userCfg || {});
-      const { roomId } = await fetchRemoteConfig();
-      const d = await queryBanned(roomId, cfgLive.uid);
-      return { ok: true, roomId, raw: d };
+      roomInfoCache = null;   // 面板探测要求实时结果，绕过短缓存
+      const info = await fetchRemoteConfig({ requireLive: false });
+      state.roomId = info.roomId;
+      state.liveStatus = info.liveStatus;
+      emitStatus();
+
+      if (info.liveStatus === 0) {
+        return {
+          ok: true,
+          roomId: info.roomId,
+          liveStatus: info.liveStatus,
+          liveStatusText: describeLive(info.liveStatus),
+          banned: null,
+          note: "房间未开播，禁言接口不可用（无法查询/执行禁言）"
+        };
+      }
+
+      const d = await queryBanned(info.roomId, cfgLive.uid);
+      const data = (d && d.data) || {};
+      return {
+        ok: true,
+        roomId: info.roomId,
+        liveStatus: info.liveStatus,
+        liveStatusText: describeLive(info.liveStatus),
+        banned: !!(data.uid || data.banned || (Array.isArray(data) && data.length)),
+        raw: d
+      };
     },
     listRooms() { return { ok: true, roomId: resolveRoomId(), csrf: getCsrf() ? "present" : "missing" }; }
   };

@@ -25,12 +25,28 @@ jobs:
           node --check src/popup.js
           node --check test/harness.js
           node --check test/harness-pause.js
+          node --check test/harness-live.js
+          node --check test/dump-requests.js
+          node --check tools/pack.js
+          node --check tools/release-notes.js
+          node --check tools/set-repo-meta.js
 
-      - name: 清单 JSON 校验
-        run: node -e "JSON.parse(require('fs').readFileSync('manifest.json','utf8')); console.log('manifest.json OK')"
+      - name: 清单 / 包描述 JSON 校验
+        run: |
+          node -e "JSON.parse(require('fs').readFileSync('manifest.json','utf8')); console.log('manifest.json OK')"
+          node -e "JSON.parse(require('fs').readFileSync('package.json','utf8')); console.log('package.json OK')"
 
       - name: 循环时序测试
         run: node test/harness.js
 
       - name: 暂停 / 继续测试
         run: node test/harness-pause.js
+
+      - name: 未开播 / 等待开播测试
+        run: node test/harness-live.js
+
+      - name: 请求体打印（核对 msg 提交规则）
+        run: node test/dump-requests.js
+
+      - name: 打包脚本可用性
+        run: node tools/pack.js

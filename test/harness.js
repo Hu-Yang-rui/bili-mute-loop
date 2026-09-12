@@ -24,8 +24,6 @@ const code = fs.readFileSync(RUNTIME, "utf8");
 const listeners = [];
 const posted = [];          // 页面 → 扩展方向的全部消息
 const calls = [];           // 接口调用记录
-let roundNo = 0;            // 由测试脚本标记：当前处于第几轮
-calls.round = () => { roundNo++; };
 
 function makeWindow() {
   const win = {};
@@ -68,24 +66,35 @@ function makeWindow() {
 const win = makeWindow();
 
 let attempt = 0;
+let silenceCount = 0;       // 累计 room_silence 调用次数，用于推算轮次
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 globalThis.fetch = async (url, init) => {
   const isBan = url.includes("room_silence");
-  const rec = { url, method: init && init.method, body: init && init.body, t: Date.now(), isBan, round: roundNo };
+  // 实际业务里每轮固定两次 room_silence 调用（禁言 + 解禁），
+  // 因此用调用序号推算轮次号（从 1 开始），供断言区分轮次。
+  const round = isBan ? Math.floor(silenceCount / 2) + 1 : 0;
+  const rec = { url, method: init && init.method, body: init && init.body,
+    t: Date.now(), tEnd: null, isBan, round };
   calls.push(rec);
+  if (isBan) silenceCount++;
 
   let json = { code: 0, message: "0", data: {} };
-  if (isBan && rec.body) {
+  if (url.includes("/room/v1/Room/get_info")) {
+    // 循环开始前的前置检查会读一次房间信息，这里报「直播中」
+    json = { code: 0, message: "0", data: { room_id: 21452505, live_status: 1 } };
+  } else if (isBan && rec.body) {
     const params = new URLSearchParams(rec.body);
     rec.duration = Number(params.get("duration"));
     rec.banned_uid = params.get("banned_uid");
     rec.csrf = params.get("csrf");
     rec.room_id = params.get("room_id");
+    rec.msg = params.get("msg");
     // 前两次禁言请求返回限频，验证指数退避
     if (attempt++ < 2) json = { code: -509, message: "请求过于频繁，请稍后再试" };
   }
   await sleep(15); // 模拟网络往返
+  rec.tEnd = Date.now();   // 响应到达时刻（与 runtime 内部的 t1 对齐）
   return { status: 200, text: async () => JSON.stringify(json) };
 };
 
@@ -147,37 +156,76 @@ function check(name, cond, detail) {
   check("请求体 banned_uid = 目标 UID", anyBan.banned_uid === "10086", "banned_uid=" + anyBan.banned_uid);
   check("请求体 room_id 正确", anyBan.room_id === "21452505", "room_id=" + anyBan.room_id);
 
-  // 配对校验：mock 侧按调用顺序还原「同一轮的禁言（可含 -509 重试）→ 解禁」。
-  // 用 body 里的 msg 字段区分禁言/解禁（解禁时 msg 置空），不依赖 duration。
+  /* ---------------- 按调用顺序还原每一轮的「禁言 → 解禁」 ----------------
+   * 注意：msg 现在恒为空串（禁言理由已从面板移除），不能再靠 body 区分两种动作，
+   * 只能靠调用顺序 —— 这与 runtime 的实际行为一致：每轮先禁言（可能重试），再解禁。
+   */
+  // 判据：与「上一次禁言调用」间隔 < 200ms 的，是同一轮的限频重试；
+  // 间隔明显更大的那次，就是该轮的解禁。禁言/解禁对之间至少间隔 unbanDelayMs（这里 455ms）。
+  const RETRY_WINDOW_MS = 200;
   const roundsByCall = [];
+  let lastBanAt = null;
   for (const c of silence) {
-    const params = new URLSearchParams(c.body || "");
-    const isBanCall = params.get("msg") !== "";
-    const last = roundsByCall[roundsByCall.length - 1];
-    if (last && last.stage === "ban" && isBanCall) last.items.push(c);     // 同一轮的禁言重试
-    else if (last && last.stage === "unban" && !isBanCall) last.items.push(c);
-    else roundsByCall.push({ stage: isBanCall ? "ban" : "unban", items: [c] });
+    const isRetry = lastBanAt !== null && (c.t - lastBanAt) < RETRY_WINDOW_MS;
+    if (isRetry) {
+      roundsByCall[roundsByCall.length - 1].items.push(c);
+      lastBanAt = c.t;
+    } else if (roundsByCall.length && roundsByCall[roundsByCall.length - 1].stage === "ban" &&
+               !roundsByCall[roundsByCall.length - 1].paired) {
+      roundsByCall[roundsByCall.length - 1].paired = true;   // 该禁言组的解禁
+      roundsByCall.push({ stage: "unban", items: [c] });
+      lastBanAt = null;
+    } else {
+      roundsByCall.push({ stage: "ban", items: [c] });
+      lastBanAt = c.t;
+    }
   }
-  const pairGaps = [];
-  let orderOk = roundsByCall.length === 6;
-  for (let i = 0; i + 1 < roundsByCall.length; i += 2) {
-    if (roundsByCall[i].stage !== "ban" || roundsByCall[i + 1].stage !== "unban") { orderOk = false; continue; }
-    const banDone = roundsByCall[i].items[roundsByCall[i].items.length - 1]; // 禁言成功那次
-    const unbanSent = roundsByCall[i + 1].items[0];
-    pairGaps.push(unbanSent.t - banDone.t);
-  }
-  check("每轮顺序均为 禁言 → 解禁（无残留禁言态）", orderOk,
-    "sequence=" + roundsByCall.map((g) => g.stage).join("→"));
-  check("每对 禁言→解禁 间隔 ≤ 500ms", pairGaps.length === 3 && pairGaps.every((g) => g <= 500),
-    pairGaps.join(", ") + " ms");
 
-  // 解禁请求体：msg 必须为空、duration 必须为 0
+  const pairGaps = [];
+  const sequence = [];
+  for (let i = 0; i + 1 < roundsByCall.length; i += 2) {
+    const banGroup = roundsByCall[i];
+    const unbanGroup = roundsByCall[i + 1];
+    if (banGroup.stage !== "ban" || unbanGroup.stage !== "unban") { sequence.push("错序"); continue; }
+    sequence.push("ban" + (banGroup.items.length > 1 ? "(+重试×" + (banGroup.items.length - 1) + ")" : "") +
+      "→unban");
+    // runtime 的 unbanGapMs = 解禁发出时刻 − 禁言成功响应时刻
+    const banDoneAt = banGroup.items[banGroup.items.length - 1].tEnd;
+    pairGaps.push(unbanGroup.items[0].t - banDoneAt);
+  }
+  check("每轮顺序均为 禁言 → 解禁（无残留禁言态）",
+    pairGaps.length === 3 && sequence.every((s) => s.includes("→unban")),
+    "sequence=" + sequence.join(" | "));
+  check("每对 禁言→解禁 间隔 ≤ 500ms（按请求实测时刻计算）",
+    pairGaps.length === 3 && pairGaps.every((g) => g <= 500), pairGaps.join(", ") + " ms");
+
   const unbanReqs = roundsByCall.filter((g) => g.stage === "unban").map((g) => g.items[0]);
+  const banReqs = roundsByCall.filter((g) => g.stage === "ban").map((g) => g.items[g.items.length - 1]);
+
+  // 解禁请求体：msg 必须为空、duration 必须为 0（否则会被后端当成再次禁言）
   const unbanOk = unbanReqs.every((c) => {
     const p = new URLSearchParams(c.body);
     return p.get("msg") === "" && p.get("duration") === "0";
   });
   check("解禁请求 msg 为空且 duration=0（不会被误判为再次禁言）", unbanOk, "解禁请求数 " + unbanReqs.length);
+
+  // 禁言请求体：房管禁言不需要理由，msg 同样固定为空串
+  check("禁言请求不再携带理由（msg 恒为空串）",
+    banReqs.every((c) => new URLSearchParams(c.body).get("msg") === ""),
+    "禁言请求数 " + banReqs.length);
+
+  // 请求体不应再包含已下线的 msg 之外的游离字段
+  check("请求体只含约定字段（room_id/banned_uid/msg/mtype/duration/csrf）",
+    banReqs.every((c) => {
+      const keys = [...new URLSearchParams(c.body).keys()].sort().join(",");
+      return keys === "banned_uid,csrf,duration,msg,mtype,room_id";
+    }),
+    banReqs.length ? [...new URLSearchParams(banReqs[0].body).keys()].join(",") : "(无禁言请求)");
+
+  // 前置检查：循环开始前会探测开播状态
+  check("启动前探测了房间开播状态（get_info）",
+    calls.some((c) => c.url.includes("/room/v1/Room/get_info")),
+    "get_info 调用 " + calls.filter((c) => c.url.includes("get_info")).length + " 次");
 
   const userMsgs = posted.filter((m) => m.type === "log" || m.type === "status" || m.type === "stopped");
   check("有日志/状态上报给扩展侧", userMsgs.length > 5, "msgs=" + userMsgs.length);
@@ -187,7 +235,9 @@ function check(name, cond, detail) {
   console.log("\n--- 时序摘要 ---");
   rounds.forEach((r) => console.log(
     `  第 ${r.index} 轮  禁言请求 ${r.banMs}ms  解禁间隔 ${r.unbanGapMs}ms  解禁 ${r.unbanMs}ms  单轮 ${r.totalMs}ms`));
-  console.log(`  墙钟总耗时 ${wall}ms，接口调用 ${calls.length} 次（含 ${calls.length - 6} 次限频重试）`);
+  const infoCount = calls.filter((c) => !c.isBan).length;
+  console.log(`  墙钟总耗时 ${wall}ms，接口调用 ${calls.length} 次` +
+    `（room_silence ${silence.length} 次，含 ${silence.length - 6} 次限频重试；房间信息 ${infoCount} 次）`);
 
   console.log("\n" + (failures === 0 ? "全部通过 ✅" : failures + " 项失败 ❌"));
   process.exit(failures === 0 ? 0 : 1);
