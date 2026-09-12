@@ -10,7 +10,9 @@
     "test:live": "node test/harness-live.js",
     "dump": "node test/dump-requests.js",
     "pack": "node tools/pack.js",
-    "check": "node --check src/runtime.js && node --check src/page-bridge.js && node --check src/background.js && node --check src/popup.js",
+    "release:asset": "node tools/update-asset.js",
+    "release:notes": "node tools/release-notes.js",
+    "check": "node --check src/runtime.js && node --check src/page-bridge.js && node --check src/background.js && node --check src/popup.js && node --check test/harness-live.js",
     "verify": "npm run check && npm test"
   }
 }
